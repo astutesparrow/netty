@@ -555,8 +555,8 @@ final class DefaultChannelPipeline implements ChannelPipeline {
 
     @Override
     public ChannelHandler first() {
-        DefaultChannelHandlerContext first = head.next;
-        if (first == head) {
+        ChannelHandlerContext first = firstContext();
+        if (first == null) {
             return null;
         }
         return first.handler();
@@ -564,13 +564,23 @@ final class DefaultChannelPipeline implements ChannelPipeline {
 
     @Override
     public ChannelHandlerContext firstContext() {
-        return head.next;
+        DefaultChannelHandlerContext ctx = head;
+        for (;;) {
+            DefaultChannelHandlerContext first = ctx.next;
+            if (!first.isMarkedForRemoval()) {
+                return first;
+            }
+            if (first == head) {
+                return null;
+            }
+            ctx = first;
+        }
     }
 
     @Override
     public ChannelHandler last() {
-        DefaultChannelHandlerContext last = tail.prev;
-        if (last == head) {
+        ChannelHandlerContext last = lastContext();
+        if (last == null) {
             return null;
         }
         return last.handler();
@@ -578,11 +588,17 @@ final class DefaultChannelPipeline implements ChannelPipeline {
 
     @Override
     public ChannelHandlerContext lastContext() {
-        DefaultChannelHandlerContext last = tail.prev;
-        if (last == head) {
-            return null;
+        DefaultChannelHandlerContext ctx = tail;
+        for (;;) {
+            DefaultChannelHandlerContext last = ctx.prev;
+            if (!last.isMarkedForRemoval()) {
+                return last;
+            }
+            if (last == head) {
+                return null;
+            }
+            ctx = last;
         }
-        return last;
     }
 
     @Override
@@ -630,7 +646,7 @@ final class DefaultChannelPipeline implements ChannelPipeline {
                 return null;
             }
 
-            if (ctx.handler() == handler) {
+            if (ctx.handler() == handler && !ctx.isMarkedForRemoval()) {
                 return ctx;
             }
 
@@ -649,7 +665,7 @@ final class DefaultChannelPipeline implements ChannelPipeline {
             if (ctx == null) {
                 return null;
             }
-            if (handlerType.isAssignableFrom(ctx.handler().getClass())) {
+            if (handlerType.isAssignableFrom(ctx.handler().getClass()) && !ctx.isMarkedForRemoval()) {
                 return ctx;
             }
             ctx = ctx.next;
@@ -664,7 +680,9 @@ final class DefaultChannelPipeline implements ChannelPipeline {
             if (ctx == null) {
                 return list;
             }
-            list.add(ctx.name());
+            if (!ctx.isMarkedForRemoval()) {
+                list.add(ctx.name());
+            }
             ctx = ctx.next;
         }
     }
@@ -677,7 +695,9 @@ final class DefaultChannelPipeline implements ChannelPipeline {
             if (ctx == tail) {
                 return map;
             }
-            map.put(ctx.name(), ctx.handler());
+            if (!ctx.isMarkedForRemoval()) {
+                map.put(ctx.name(), ctx.handler());
+            }
             ctx = ctx.next;
         }
     }
@@ -700,7 +720,9 @@ final class DefaultChannelPipeline implements ChannelPipeline {
             if (ctx == tail) {
                 break;
             }
-
+            if (ctx.isMarkedForRemoval()) {
+                continue;
+            }
             buf.append('(');
             buf.append(ctx.name());
             buf.append(" = ");

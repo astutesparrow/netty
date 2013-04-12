@@ -94,6 +94,9 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
     private Runnable invokeChannelReadSuspendedTask;
     private Runnable invokeRead0Task;
 
+    private volatile boolean fireInboundBufferUpdatedOnRemoval;
+    private volatile boolean removePending;
+
     @SuppressWarnings("unchecked")
     DefaultChannelHandlerContext(
             DefaultChannelPipeline pipeline, EventExecutorGroup group, String name, ChannelHandler handler) {
@@ -191,6 +194,14 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         inMsgBuf = handler.msgSink;
         outByteBuf = null;
         outMsgBuf = null;
+    }
+
+    void markForRemoval() {
+        removePending = true;
+    }
+
+    boolean isMarkedForRemoval() {
+        return removePending;
     }
 
     void forwardBufferContent(final DefaultChannelHandlerContext forwardPrev,
@@ -665,20 +676,24 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         final DefaultChannelHandlerContext next = findContextInbound();
         EventExecutor executor = next.executor();
         if (executor.inEventLoop()) {
-            next.invokeChannelRegistered();
+            next.invokeChannelRegistered(true);
         } else {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    next.invokeChannelRegistered();
+                    next.invokeChannelRegistered(false);
                 }
             });
         }
         return this;
     }
 
-    private void invokeChannelRegistered() {
+    private void invokeChannelRegistered(boolean inEventLoop) {
         try {
+            if (!inEventLoop && isMarkedForRemoval()) {
+                fireChannelRegistered();
+                return;
+            }
             ((ChannelStateHandler) handler()).channelRegistered(this);
         } catch (Throwable t) {
             notifyHandlerException(t);
@@ -692,20 +707,24 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         final DefaultChannelHandlerContext next = findContextInbound();
         EventExecutor executor = next.executor();
         if (prev != null && executor.inEventLoop()) {
-            next.invokeChannelUnregistered();
+            next.invokeChannelUnregistered(true);
         } else {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    next.invokeChannelUnregistered();
+                    next.invokeChannelUnregistered(false);
                 }
             });
         }
         return this;
     }
 
-    private void invokeChannelUnregistered() {
+    private void invokeChannelUnregistered(boolean inEventLoop) {
         try {
+            if (!inEventLoop && isMarkedForRemoval()) {
+                fireChannelUnregistered();
+                return;
+            }
             ((ChannelStateHandler) handler()).channelUnregistered(this);
         } catch (Throwable t) {
             notifyHandlerException(t);
@@ -717,20 +736,24 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         final DefaultChannelHandlerContext next = findContextInbound();
         EventExecutor executor = next.executor();
         if (executor.inEventLoop()) {
-            next.invokeChannelActive();
+            next.invokeChannelActive(true);
         } else {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    next.invokeChannelActive();
+                    next.invokeChannelActive(false);
                 }
             });
         }
         return this;
     }
 
-    private void invokeChannelActive() {
+    private void invokeChannelActive(boolean inEventLoop) {
         try {
+            if (!inEventLoop && isMarkedForRemoval()) {
+                fireChannelActive();
+                return;
+            }
             ((ChannelStateHandler) handler()).channelActive(this);
         } catch (Throwable t) {
             notifyHandlerException(t);
@@ -744,20 +767,24 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         final DefaultChannelHandlerContext next = findContextInbound();
         EventExecutor executor = next.executor();
         if (prev != null && executor.inEventLoop()) {
-            next.invokeChannelInactive();
+            next.invokeChannelInactive(true);
         } else {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    next.invokeChannelInactive();
+                    next.invokeChannelInactive(false);
                 }
             });
         }
         return this;
     }
 
-    private void invokeChannelInactive() {
+    private void invokeChannelInactive(boolean inEventLoop) {
         try {
+            if (!inEventLoop && isMarkedForRemoval()) {
+                fireChannelInactive();
+                return;
+            }
             ((ChannelStateHandler) handler()).channelInactive(this);
         } catch (Throwable t) {
             notifyHandlerException(t);
@@ -779,13 +806,13 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
     private void invokeExceptionCaught(final Throwable cause) {
         EventExecutor executor = executor();
         if (prev != null && executor.inEventLoop()) {
-            invokeExceptionCaught0(cause);
+            invokeExceptionCaught0(true, cause);
         } else {
             try {
                 executor.execute(new Runnable() {
                     @Override
                     public void run() {
-                        invokeExceptionCaught0(cause);
+                        invokeExceptionCaught0(false, cause);
                     }
                 });
             } catch (Throwable t) {
@@ -797,9 +824,13 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         }
     }
 
-    private void invokeExceptionCaught0(Throwable cause) {
+    private void invokeExceptionCaught0(boolean inEventLoop,  Throwable cause) {
         ChannelHandler handler = handler();
         try {
+            if (!inEventLoop && isMarkedForRemoval()) {
+                fireExceptionCaught(cause);
+                return;
+            }
             handler.exceptionCaught(this, cause);
         } catch (Throwable t) {
             if (logger.isWarnEnabled()) {
@@ -821,19 +852,23 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         final DefaultChannelHandlerContext next = findContextInbound();
         EventExecutor executor = next.executor();
         if (executor.inEventLoop()) {
-            next.invokeUserEventTriggered(event);
+            next.invokeUserEventTriggered(true, event);
         } else {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    next.invokeUserEventTriggered(event);
+                    next.invokeUserEventTriggered(false, event);
                 }
             });
         }
         return this;
     }
 
-    private void invokeUserEventTriggered(Object event) {
+    private void invokeUserEventTriggered(boolean inEventLoop, Object event) {
+        if (!inEventLoop && isMarkedForRemoval()) {
+            fireUserEventTriggered(event);
+            return;
+        }
         ChannelStateHandler handler = (ChannelStateHandler) handler();
 
         try {
@@ -870,7 +905,7 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
             feedNextInBridge();
             // This comparison is safe because this method is always executed from the executor.
             if (next.executor == executor) {
-                next.invokeInboundBufferUpdated();
+                next.invokeInboundBufferUpdated(true);
             } else {
                 Runnable task = next.invokeInboundBufferUpdatedTask;
                 if (task == null) {
@@ -882,7 +917,7 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
                             }
 
                             if (findContextInbound() == next) {
-                                next.invokeInboundBufferUpdated();
+                                next.invokeInboundBufferUpdated(false);
                             } else {
                                 // Pipeline changed since the task was submitted; try again.
                                 fireInboundBufferUpdated0(next);
@@ -902,9 +937,13 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         }
     }
 
-    private void invokeInboundBufferUpdated() {
+    private void invokeInboundBufferUpdated(boolean inEventLoop) {
         ChannelStateHandler handler = (ChannelStateHandler) handler();
-
+        if (!inEventLoop && isMarkedForRemoval()) {
+            // just return here
+            fireInboundBufferUpdatedOnRemoval = true;
+            return;
+        }
         if (handler instanceof ChannelInboundHandler) {
             for (;;) {
                 try {
@@ -942,7 +981,7 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         final DefaultChannelHandlerContext next = findContextInbound();
         EventExecutor executor = next.executor();
         if (executor.inEventLoop()) {
-            next.invokeChannelReadSuspended();
+            next.invokeChannelReadSuspended(true);
         } else {
             Runnable task = next.invokeChannelReadSuspendedTask;
             if (task == null) {
@@ -950,7 +989,7 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
                     @Override
                     public void run() {
                         if (findContextInbound() == next) {
-                            next.invokeChannelReadSuspended();
+                            next.invokeChannelReadSuspended(false);
                         } else {
                             // Pipeline changed since the task was submitted; try again.
                             fireChannelReadSuspended();
@@ -963,7 +1002,7 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         return this;
     }
 
-    private void invokeChannelReadSuspended() {
+    private void invokeChannelReadSuspended(boolean inEventLoop) {
         try {
             ((ChannelStateHandler) handler()).channelReadSuspended(this);
         } catch (Throwable t) {
@@ -1025,20 +1064,24 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
     private ChannelFuture invokeBind(final SocketAddress localAddress, final ChannelPromise promise) {
         EventExecutor executor = executor();
         if (executor.inEventLoop()) {
-            invokeBind0(localAddress, promise);
+            invokeBind0(true, localAddress, promise);
         } else {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    invokeBind0(localAddress, promise);
+                    invokeBind0(false, localAddress, promise);
                 }
             });
         }
         return promise;
     }
 
-    private void invokeBind0(SocketAddress localAddress, ChannelPromise promise) {
+    private void invokeBind0(boolean inEventLoop, SocketAddress localAddress, ChannelPromise promise) {
         try {
+            if (!inEventLoop && isMarkedForRemoval()) {
+                bind(localAddress, promise);
+                return;
+            }
             ((ChannelOperationHandler) handler()).bind(this, localAddress, promise);
         } catch (Throwable t) {
             notifyHandlerException(t);
@@ -1065,12 +1108,12 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
             final SocketAddress remoteAddress, final SocketAddress localAddress, final ChannelPromise promise) {
         EventExecutor executor = executor();
         if (executor.inEventLoop()) {
-            invokeConnect0(remoteAddress, localAddress, promise);
+            invokeConnect0(true, remoteAddress, localAddress, promise);
         } else {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    invokeConnect0(remoteAddress, localAddress, promise);
+                    invokeConnect0(false, remoteAddress, localAddress, promise);
                 }
             });
         }
@@ -1078,8 +1121,13 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         return promise;
     }
 
-    private void invokeConnect0(SocketAddress remoteAddress, SocketAddress localAddress, ChannelPromise promise) {
+    private void invokeConnect0(boolean inEventLoop, SocketAddress remoteAddress, SocketAddress localAddress,
+                                ChannelPromise promise) {
         try {
+            if (!inEventLoop && isMarkedForRemoval()) {
+                connect(remoteAddress, localAddress, promise);
+                return;
+            }
             ((ChannelOperationHandler) handler()).connect(this, remoteAddress, localAddress, promise);
         } catch (Throwable t) {
             notifyHandlerException(t);
@@ -1104,12 +1152,12 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
     private ChannelFuture invokeDisconnect(final ChannelPromise promise) {
         EventExecutor executor = executor();
         if (executor.inEventLoop()) {
-            invokeDisconnect0(promise);
+            invokeDisconnect0(true, promise);
         } else {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    invokeDisconnect0(promise);
+                    invokeDisconnect0(false, promise);
                 }
             });
         }
@@ -1117,8 +1165,12 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         return promise;
     }
 
-    private void invokeDisconnect0(ChannelPromise promise) {
+    private void invokeDisconnect0(boolean inEventLoop, ChannelPromise promise) {
         try {
+            if (!inEventLoop && isMarkedForRemoval()) {
+                disconnect(promise);
+                return;
+            }
             ((ChannelOperationHandler) handler()).disconnect(this, promise);
         } catch (Throwable t) {
             notifyHandlerException(t);
@@ -1136,12 +1188,12 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
     private ChannelFuture invokeClose(final ChannelPromise promise) {
         EventExecutor executor = executor();
         if (executor.inEventLoop()) {
-            invokeClose0(promise);
+            invokeClose0(true, promise);
         } else {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    invokeClose0(promise);
+                    invokeClose0(false, promise);
                 }
             });
         }
@@ -1149,8 +1201,12 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         return promise;
     }
 
-    private void invokeClose0(ChannelPromise promise) {
+    private void invokeClose0(boolean inEventLoop, ChannelPromise promise) {
         try {
+            if (!inEventLoop && isMarkedForRemoval()) {
+                close(promise);
+                return;
+            }
             ((ChannelOperationHandler) handler()).close(this, promise);
         } catch (Throwable t) {
             notifyHandlerException(t);
@@ -1168,12 +1224,12 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
     private ChannelFuture invokeDeregister(final ChannelPromise promise) {
         EventExecutor executor = executor();
         if (executor.inEventLoop()) {
-            invokeDeregister0(promise);
+            invokeDeregister0(true, promise);
         } else {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    invokeDeregister0(promise);
+                    invokeDeregister0(false, promise);
                 }
             });
         }
@@ -1181,8 +1237,12 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         return promise;
     }
 
-    private void invokeDeregister0(ChannelPromise promise) {
+    private void invokeDeregister0(boolean inEventLoop, ChannelPromise promise) {
         try {
+            if (!inEventLoop && isMarkedForRemoval()) {
+                deregister(promise);
+                return;
+            }
             ((ChannelOperationHandler) handler()).deregister(this, promise);
         } catch (Throwable t) {
             notifyHandlerException(t);
@@ -1199,14 +1259,14 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
     private void invokeRead() {
         EventExecutor executor = executor();
         if (executor.inEventLoop()) {
-            invokeRead0();
+            invokeRead0(true);
         } else {
             Runnable task = invokeRead0Task;
             if (task == null) {
                 invokeRead0Task = task = new Runnable() {
                     @Override
                     public void run() {
-                        invokeRead0();
+                        invokeRead0(false);
                     }
                 };
             }
@@ -1214,8 +1274,12 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         }
     }
 
-    private void invokeRead0() {
+    private void invokeRead0(boolean inEventLoop) {
         try {
+            if (!inEventLoop && isMarkedForRemoval()) {
+                read();
+                return;
+            }
             ((ChannelOperationHandler) handler()).read(this);
         } catch (Throwable t) {
             notifyHandlerException(t);
@@ -1264,12 +1328,12 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
     private ChannelFuture invokeFlush(final ChannelPromise promise, Thread currentThread) {
         EventExecutor executor = executor();
         if (executor.inEventLoop(currentThread)) {
-            invokeFlush0(promise);
+            invokeFlush0(true, promise);
         } else {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    invokeFlush0(promise);
+                    invokeFlush0(false, promise);
                 }
             });
         }
@@ -1277,19 +1341,22 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         return promise;
     }
 
-    private void invokeFlush0(ChannelPromise promise) {
-        Channel channel = channel();
-        if (!channel.isRegistered() && !channel.isActive()) {
-            promise.setFailure(new ClosedChannelException());
-            return;
-        }
-
-        ChannelOperationHandler handler = (ChannelOperationHandler) handler();
-        if (handler instanceof ChannelOutboundHandler) {
-            flushOutboundBridge();
-        }
-
+    private void invokeFlush0(boolean inEventLoop, ChannelPromise promise) {
         try {
+            if (!inEventLoop && isMarkedForRemoval()) {
+                // TODO:    think about this!
+                return;
+            }
+            Channel channel = channel();
+            if (!channel.isRegistered() && !channel.isActive()) {
+                promise.setFailure(new ClosedChannelException());
+                return;
+            }
+
+            ChannelOperationHandler handler = (ChannelOperationHandler) handler();
+            if (handler instanceof ChannelOutboundHandler) {
+                flushOutboundBridge();
+            }
             handler.flush(this, promise);
         } catch (Throwable t) {
             notifyHandlerException(t);
@@ -1322,12 +1389,12 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
     private ChannelFuture invokeSendFile(final FileRegion region, final ChannelPromise promise) {
         EventExecutor executor = executor();
         if (executor.inEventLoop()) {
-            invokeSendFile0(region, promise);
+            invokeSendFile0(true, region, promise);
         } else {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    invokeSendFile0(region, promise);
+                    invokeSendFile0(false, region, promise);
                 }
             });
         }
@@ -1335,13 +1402,19 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         return promise;
     }
 
-    private void invokeSendFile0(FileRegion region, ChannelPromise promise) {
-        ChannelOperationHandler handler = (ChannelOperationHandler) handler();
-        if (handler instanceof ChannelOutboundHandler) {
-            flushOutboundBridge();
-        }
-
+    private void invokeSendFile0(boolean inEventLoop, FileRegion region, ChannelPromise promise) {
         try {
+            if (!inEventLoop && isMarkedForRemoval()) {
+                // TODO:    think about this!
+                sendFile(region, promise);
+                return;
+            }
+
+            ChannelOperationHandler handler = (ChannelOperationHandler) handler();
+            if (handler instanceof ChannelOutboundHandler) {
+                flushOutboundBridge();
+            }
+
             handler.sendFile(this, region, promise);
         } catch (Throwable t) {
             notifyHandlerException(t);
@@ -1394,7 +1467,7 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         }
 
         if (executor.inEventLoop()) {
-            ctx.write0(message, promise, msgBuf);
+            ctx.write0(true, message, promise, msgBuf);
             return promise;
         }
 
@@ -1402,14 +1475,14 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
         executor.execute(new Runnable() {
             @Override
             public void run() {
-                ctx0.write0(message, promise, msgBuf);
+                ctx0.write0(false, message, promise, msgBuf);
             }
         });
 
         return promise;
     }
 
-    private void write0(Object message, ChannelPromise promise, boolean msgBuf) {
+    private void write0(boolean inEventLoop, Object message, ChannelPromise promise, boolean msgBuf) {
         Channel channel = channel();
         if (!channel.isRegistered() && !channel.isActive()) {
             promise.setFailure(new ClosedChannelException());
@@ -1427,7 +1500,7 @@ final class DefaultChannelHandlerContext extends DefaultAttributeMap implements 
             ByteBuf buf = (ByteBuf) message;
             outboundByteBuffer().writeBytes(buf, buf.readerIndex(), buf.readableBytes());
         }
-        invokeFlush0(promise);
+        invokeFlush0(inEventLoop, promise);
     }
 
     void invokeFreeInboundBuffer() {
